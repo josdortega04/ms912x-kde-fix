@@ -37,3 +37,39 @@ Driver is written by analyzing wireshark captures of the device.
 
 Run `sudo dkms install .`
 
+
+## KDE Plasma Wayland: MS912x display refresh workaround
+
+A small GTK4 window can be used as a workaround to trigger periodic screen
+updates when using the MS912x USB display adapter under KDE Plasma Wayland.
+
+### Helper scripts
+
+- `scripts/damage-kde.py`: creates an undecorated 8 × 8 pixel GTK4 window
+  with 12% opacity. Its drawing area is refreshed every 500 ms.
+- `scripts/position-damage.sh`: locates the window named `damage`, resizes it,
+  positions it at coordinates `3900,100`, and sets window-management flags
+  using `kdotool`.
+
+### Requirements
+
+- Python 3
+- GTK 4 and PyGObject
+- KDE Plasma Wayland
+- `kdotool`
+
+### Usage
+
+Run the scripts from the repository directory in separate terminals:
+
+```bash
+python scripts/damage-kde.py
+```
+
+```bash
+bash scripts/position-damage.sh
+```
+
+The positioning coordinates may need to be adjusted to match the desktop's
+monitor layout. This is a desktop-specific workaround and is not part of the
+kernel driver's core functionality.
