@@ -1,147 +1,159 @@
-# ms912x USB HDMI Adapter - KDE Plasma Fix
+# MS912x KDE Fix — Solución estable para adaptador MacroSilicon MS912x en KDE Plasma/Wayland
 
-Solución funcional para adaptador USB-HDMI MSI/MacroSilicon MS912x
-(345f:9133) en KDE Plasma 6 Wayland.
+> **Estado**: ✅ **ESTABLE** — Probado en login (SDDM→KWin) y suspend/resume
 
-## Hardware
+---
 
-- Adaptador: Reborn USB to HDMI Adapter (MSI/MacroSilicon)
-- USB ID: 345f:9133
-- Driver: ms912x (DKMS desde AUR)
-- Sistema: Arch Linux + KDE Plasma 6 Wayland
-- GPU: Intel (iGPU del laptop)
+## Problema
 
-## Estado: FUNCIONANDO
+Adaptador USB-HDMI basado en chip **MacroSilicon MS912x** en KDE Plasma (Wayland):
 
-- Monitor USB activo en KDE Wayland
-- Imagen estable con daño continuo
-- PC fluido (load menor a 1.0)
-- Sin servicios systemd problemáticos
+| Síntoma | Causa |
+|---------|-------|
+| Pantalla se apaga al cambiar modo o aplicar config | Chip inestable a @60Hz |
+| Solo revive moviendo ratón encima (o cambio resolución + vuelta) | Necesita "damage" continuo |
+| Funciona perfecto en SDDM, se apaga al loguear (KWin arranca) | KWin reaplica config @60 |
+| Igual tras suspend/resume | Chip queda en estado malo |
+| **Solo @50Hz es estable** — cualquier variante @60 (incluido 59.94) mata el chip | Limitación hardware/firmware |
 
-## Cómo funciona
+---
 
-El driver ms912x es síncrono y no implementa atomic modesetting,
-GBM, DMA-BUF ni gamma. Esto causaba:
+## Hardware / Entorno
 
-1. Damage tracking roto: la imagen se congelaba sin interacción.
-2. Bucle de KWin: KWin intentaba componer con GPU y fallaba en bucle.
+- **Host**: KALAHARI (Fedora/Arch-like, KDE Plasma Wayland)
+- **Usuario**: `davidu14`
+- **GPU**: 3 salidas — `eDP-1`, `HDMI-A-1`, `HDMI-A-2` (MS912x)
+- **Escala fraccional**: `HDMI-A-2` en `0.9`
+- **Driver**: `ms912x` en `/sys/class/drm/card0-HDMI-A-2`
+- **Herramientas**: `ydotool` + `ydotoold`, `kdotool` (coordenadas literales, sin factor de escala)
 
-### Solución
+---
 
-1. Cargar módulo manualmente (sin udev, sin systemd).
-2. Activar monitor con kscreen-doctor (no automático).
-3. Ventana de daño en la pantalla USB que fuerza redibujado a 2 fps.
+## Solución: "Danza de despertar" automatizada
+
+La secuencia que **siempre** revive el chip y lo deja estable:
+
+```bash
+# 1. Reset total del chip
+kscreen-doctor output.HDMI-A-2.disable
+sleep 1
+
+# 2. Handshake @60 (fuerza renegociación HDMI)
+kscreen-doctor output.HDMI-A-2.enable output.HDMI-A-2.mode.1
+sleep 2
+
+# 3. Modo estable @50
+kscreen-doctor output.HDMI-A-2.mode.4
+sleep 1.5
+
+# 4. Ventana damage (16x16, 12% opacidad, redibuja cada 500ms)
+position-damage.sh --restart
+```
+
+**Modos clave HDMI-A-2:**
+- **Modo 1**: `1920x1080@60.00` (preferred, **mata el chip**)
+- **Modo 4**: `1920x1080@50.00` (**estable**)
+
+---
 
 ## Instalación
 
-### 1. Driver DKMS
+```bash
+# 1. Clonar
+git clone https://github.com/josdortega04/ms912x-kde-fix.git
+cd ms912x-kde-fix
 
-    yay -S evdi-dkms ms912x
-    sudo modprobe ms912x
+# 2. Instalar scripts en ~/.local/bin
+cp scripts/ms912x-wake.sh ~/.local/bin/
+chmod +x ~/.local/bin/ms912x-wake.sh
 
-### 2. Scripts
+# 3. Autostart KDE (login Wayland)
+mkdir -p ~/.config/autostart
+cp ms912x-wake.desktop ~/.config/autostart/  # incluido en repo
 
-    mkdir -p ~/.local/bin
-    cp scripts/*.py ~/.local/bin/
-    cp scripts/*.sh ~/.local/bin/
-    chmod +x ~/.local/bin/damage-kde.py
-    chmod +x ~/.local/bin/position-damage.sh
-    chmod +x ~/.local/bin/usb-on.sh
-    chmod +x ~/.local/bin/usb-off.sh
+# 4. Hook systemd (resume suspensión) — requiere sudo
+sudo cp ms912x-wake-systemd /usr/lib/systemd/system-sleep/ms912x-wake
+sudo chmod +x /usr/lib/systemd/system-sleep/ms912x-wake
+```
 
-### 3. Alias
+---
 
-    echo 'alias usb-on="~/.local/bin/usb-on.sh"' >> ~/.bashrc
-    echo 'alias usb-off="~/.local/bin/usb-off.sh"' >> ~/.bashrc
-    echo 'alias usb-1080="~/.local/bin/usb-on.sh 1920"' >> ~/.bashrc
-    source ~/.bashrc
+## Archivos del proyecto
 
-### 4. ydotool (opcional)
+```
+ms912x-kde-fix/
+├── scripts/
+│   ├── ms912x-lib.sh          # Librería compartida (detección, modos, logging)
+│   ├── ms912x-activate.sh     # Activa salida + opcional damage (con --mode seguro)
+│   ├── ms912x-wake.sh         # **Danza completa** (disable → @60 → @50 → damage)
+│   └── position-damage.sh     # Autodetecta posición HDMI-A-2 y mueve ventana damage
+├── ms912x-wake.desktop        # Autostart KDE (phase=1, early startup)
+├── ms912x-wake-systemd        # Hook systemd sleep (post-suspend/hibernate)
+└── README.md
+```
 
-    yay -S ydotool
-    sudo usermod -aG input $USER
+**En `~/.local/bin/` (aliases de usuario):**
+- `usb-on` → `usb-on.sh` (1920x1080@50 explícito, funciona standalone)
+- `usb-off` → `usb-off.sh`
+- `damage-kde.py` — Ventana GTK4 8x8, 12% opacidad, redibuja cada 500ms
+- `ms912x-wake.sh` — Copia del script principal
 
-## Uso diario
+---
 
-    # Encender (1280x720@60)
-    usb-on
+## Automatización: qué se ejecuta cuándo
 
-    # Encender (1920x1080@50)
-    usb-1080
+| Evento | Qué corre | Cómo |
+|--------|-----------|------|
+| **Login Wayland** (KWin arranca) | `ms912x-wake.sh` | `~/.config/autostart/ms912x-wake.desktop` (phase=1) |
+| **Resume suspensión/hibernación** | `ms912x-wake.sh` | `/usr/lib/systemd/system-sleep/ms912x-wake` (runuser davidu14) |
 
-    # Apagar
-    usb-off
+> **Por qué phase=1 en autostart**: KWin aplica su config en phase=0; phase=1 corre *después*, sobreescribiendo lo que KWin puso.
 
-## Cómo funciona internamente
+---
 
-### usb-on.sh
+## Lo que NO funcionó (para no repetir)
 
-1. sudo modprobe ms912x - carga el driver
-2. Espera a que aparezca /sys/class/drm/card0-HDMI-A-2
-3. kscreen-doctor output.HDMI-A-2.enable - activa el monitor
-4. kscreen-doctor output.HDMI-A-2.mode.1280x720@60 - fija modo
-5. Arranca damage-kde.py en background
-6. position-damage.sh mueve la ventana a la pantalla USB
+| Intento | Por qué falló |
+|---------|---------------|
+| Una sola llamada `kscreen-doctor` con 3 args | Apagón inmediato |
+| `ydotool mousemove --relative` | Sintaxis inexistente |
+| Jiggle dentro de `ms912x_apply` | Apagaba sin recuperar |
+| Confiar en `ms912x-activate.sh` sin `--mode` | Caía a preferred=@60 |
+| Cualquier solución que ignore que **KWin reaplica config al login** | Se sobrescribe |
 
-### damage-kde.py
+---
 
-Ventana GTK4 de 64x64 que se redibuja cada 500ms (2 fps).
-Al cambiar de color (rojo-amarillo), KWin detecta daño y envía
-un frame al ms912x. Esto evita que la imagen se congele.
+## Reglas de oro
 
-### position-damage.sh
+1. **Una acción, un test, una confirmación** antes de la siguiente
+2. **Nunca tocar** `ms912x-lib.sh` ni `ms912x-activate.sh` sin datos que lo justifiquen
+3. **Nunca asumir** que KWin no reaplica config — siempre verificar `kwinoutputconfig.json`
+4. **Nunca @60Hz** — todo filtrado a `<55Hz` (preferred, best, preferredModes ignorados)
+5. `kdotool` usa **coordenadas literales** — sin factor de escala
 
-Usa kdotool para mover la ventana de daño a x=3900 (dentro de
-la pantalla USB que empieza en x=3840). Sin esto, la ventana
-aparece en el monitor principal y no genera daño en el USB.
+---
 
-## Problemas conocidos
+## Verificación rápida
 
-### El chip se cuelga
+```bash
+# Estado actual
+kscreen-doctor -j | jq '.outputs[] | select(.name=="HDMI-A-2") | {enabled, currentModeId}'
 
-Síntomas: la pantalla no responde, dmesg muestra
-ms912x: [drm] *ERROR* failed to power off display: -71.
+# Debe salir: "enabled": true, "currentModeId": "4"
 
-Solución:
+# Logs de wake
+journalctl -t ms912x-wake -f
+```
 
-    usb-off
-    sleep 5
-    usb-on
+---
 
-### 1920x1080 va lento
+## Créditos / Referencias
 
-El bus USB no da para 1080p@60 con este chip. Usa:
+- Driver kernel: `ms912x` (staging)
+- `kscreen-doctor` / `libkscreen` — control de modos KDE
+- `kdotool` — automatización Wayland nativa (coordenadas literales)
+- GTK4 + Python — ventana damage ligera
 
-- 1280x720@60 (recomendado, fluido)
-- 1920x1080@50 (funciona pero puede dar glitches)
+---
 
-### KWin entra en bucle
-
-Si tras activar el monitor el PC va lento y dmesg muestra
-Modeset failed! en bucle, es que KWin está intentando componer
-con GPU. Solución: NO usar las variables KWIN_DRM_ en
-~/.config/environment.d/.
-
-## Lo que NO funciona
-
-- GNOME/Mutter: límite de CRTCs + damage tracking roto.
-- Auto-arranque con systemd: causaba bucles infinitos.
-- udev rules: disparaban modprobe en momentos incorrectos.
-- KWIN_DRM_NO_AMS=1: rompía KWin Wayland.
-
-## Lo que SÍ funciona
-
-- Carga manual del módulo.
-- Activación manual del monitor con kscreen-doctor.
-- Daño continuo con ventana pequeña en la pantalla USB.
-- Cero automatización en el arranque.
-
-## Créditos
-
-- Driver ms912x - desarrollo en curso en el kernel Linux
-- DKMS AUR - https://aur.archlinux.org/packages/ms912x
-- Inspiración - hilos de Arch Wiki sobre DisplayLink y ms912x
-
-## Licencia
-
-MIT - Ver archivo LICENSE.
+**Última validación**: Octubre 2026 — Estable en login + suspend/resume múltiples ciclos.

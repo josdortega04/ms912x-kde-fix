@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# ============================================================================
+# ms912x-lib.sh — Librería compartida de autodetección para adaptadores
+# USB-HDMI basados en el chip MacroSilicon MS912x.
+#
+# Todas las funciones son idempotentes y no asumen nombres ni posiciones.
+#
+# Uso desde otro script:
+#   source "$(dirname "$0")/ms912x-lib.sh"
+#   out=$(ms912x_detect_output) || exit 1
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Detección de card DRM del ms912x
+# ---------------------------------------------------------------------------
+# Recorre /sys/class/drm/cardN y devuelve el primero cuyo driver sea ms912x.
+# Ejemplo: "card0"
+ms912x_detect_card() {
+    local c driver
+    for c in /sys/class/drm/card[0-9]*; do
+        [ -e "$c" ] || continue
+        [ -d "$c" ] || continue
+        [ -r "$c/device/uevent" ] || continue
+        driver=$(grep -oP '^DRIVER=\K.*' "$c/device/uevent" 2>/dev/null || true)
+        if [ "$driver" = "ms912x" ]; then
+            basename "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# 2. Detección del nombre de salida (kscreen/Wayland)
+# ---------------------------------------------------------------------------
+# A partir del card del ms912x, encuentra el connector asociado y devuelve
+# el nombre sin el prefijo "cardN-". Ejemplo: "HDMI-A-2".
+ms912x_detect_output() {
+    local card c name
+    card=$(ms912x_detect_card) || return 1
+    for c in /sys/class/drm/${card}-*; do
+        [ -e "$c" ] || continue
+        [ -d "$c" ] || continue
+        name=$(basename "$c")
+        # Quitar "card0-" del principio
+        echo "${name#${card}-}"
+        return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# 3. Cargar el módulo si no está cargado
+# ---------------------------------------------------------------------------
+ms912x_load_module() {
+    if ! lsmod | grep -q "^ms912x"; then
+        modprobe ms912x 2>/dev/null || sudo -n modprobe ms912x 2>/dev/null || return 1
+        # Esperar a que aparezca el card (máx 10s)
+        local i
+        for ((i=0; i<10; i++)); do
+            ms912x_detect_card >/dev/null 2>&1 && return 0
+            sleep 1
+        done
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 4. Modos disponibles de una salida
+# ---------------------------------------------------------------------------
+# ms912x_get_preferred_mode <OUT>  →  "WxH@R" o vacío
+# Usa preferredModes del JSON de kscreen-doctor. Más fiable que "el mayor".
+ms912x_get_preferred_mode() {
+    local out="$1"
+    kscreen-doctor -j 2>/dev/null | jq -r --arg out "$out" '
+        .outputs[] | select(.name == $out) as $o
+        | ($o.preferredModes // []) as $pref
+        | if ($pref | length) > 0 then
+            ($o.modes[] | select(.id == $pref[0]) | select(.refreshRate < 55))
+            | "\(.size.width)x\(.size.height)@\(.refreshRate | floor)"
+          else empty end
+    ' 2>/dev/null | head -1
+}
+
+# Devuelve "WxH@R" del modo con mayor área y mayor refresco (para --best)
+ms912x_get_best_mode() {
+    local out="$1"
+    kscreen-doctor -j 2>/dev/null | jq -r --arg out "$out" '
+        .outputs[] | select(.name == $out)
+        | .modes
+        | map(select(.refreshRate < 55))
+        | sort_by(-(.size.width * .size.height), -.refreshRate)
+        | .[0] | "\(.size.width)x\(.size.height)@\(.refreshRate | floor)"
+    ' 2>/dev/null | head -1
+}
+
+# ---------------------------------------------------------------------------
+# 5. Modo actual de una salida
+# ---------------------------------------------------------------------------
+ms912x_get_current_mode() {
+    local out="$1"
+    kscreen-doctor -j 2>/dev/null | jq -r --arg out "$out" '
+        .outputs[] | select(.name == $out) as $o
+        | ($o.currentModeId // "") as $id
+        | ($o.modes[] | select(.id == $id)) | "\(.size.width)x\(.size.height)@\(.refreshRate | floor)"
+    ' 2>/dev/null | head -1
+}
+
+# ---------------------------------------------------------------------------
+# 6. Estado completo de una salida
+# ---------------------------------------------------------------------------
+# Devuelve una línea: "enabled WxH@R X,Y"  o  "disabled - -"
+ms912x_get_state() {
+    local out="$1"
+    kscreen-doctor -j 2>/dev/null | jq -r --arg out "$out" '
+        .outputs[] | select(.name == $out) as $o
+        | ($o.currentModeId // "") as $id
+        | ($o.modes[] | select(.id == $id)) as $m
+        | "\(if $o.enabled then "enabled" else "disabled" end) \($m.size.width)x\($m.size.height)@\($m.refreshRate | floor) \($o.pos.x),\($o.pos.y)"
+    ' 2>/dev/null | head -1
+}
+
+# ---------------------------------------------------------------------------
+# 7. Posición deseada: a la derecha de la pantalla principal
+# ---------------------------------------------------------------------------
+# Devuelve "X,Y". Si la primaria es la propia salida ms912x, devuelve "0,0".
+ms912x_get_desired_position() {
+    local out="$1"
+    local primary_name primary_width
+    primary_name=$(kscreen-doctor -j 2>/dev/null | jq -r '
+        .outputs[] | select(.priority == 1) | .name
+    ' | head -1)
+    primary_width=$(kscreen-doctor -j 2>/dev/null | jq -r --arg n "$primary_name" '
+        .outputs[] | select(.name == $n) | .size.width
+    ' | head -1)
+
+    if [ -z "$primary_width" ] || [ "$primary_name" = "$out" ]; then
+        echo "0,0"
+    else
+        echo "${primary_width},0"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# 8. Aplicar configuración
+# ---------------------------------------------------------------------------
+# ms912x_apply <OUT> <MODE> <POS>
+#   MODE: "WxH@R"   POS: "X,Y"
+# Solo llama a kscreen-doctor si el estado actual difiere del deseado.
+# Devuelve 0 si está todo bien, 1 si algo falló.
+ms912x_apply() {
+    local out="$1" mode="$2" pos="$3"
+    local current desired
+
+    current=$(ms912x_get_state "$out")
+    desired="enabled ${mode} ${pos}"
+
+    if [ "$current" = "$desired" ]; then
+        return 0
+    fi
+
+    kscreen-doctor "output.${out}.enable"           >/dev/null 2>&1 || return 1
+    kscreen-doctor "output.${out}.mode.${mode}"     >/dev/null 2>&1 || return 1
+    kscreen-doctor "output.${out}.position.${pos}"  >/dev/null 2>&1 || return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# 9. Desactivar salida
+# ---------------------------------------------------------------------------
+ms912x_disable() {
+    local out="$1"
+    kscreen-doctor "output.${out}.disable" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# 10. Logger sencillo con timestamp
+# ---------------------------------------------------------------------------
+ms912x_log() {
+    echo "[$(date +%H:%M:%S)] $*"
+}

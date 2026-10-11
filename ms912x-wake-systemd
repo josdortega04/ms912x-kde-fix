@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# /usr/lib/systemd/system-sleep/ms912x-wake
+# Hook de resume para adaptador MacroSilicon MS912x
+# Se ejecuta como root al salir de suspensión/hibernación
+
+case "${1:-}" in
+    post)
+        # post-suspend: $2 = suspend|hibernate
+        # Ejecutar como usuario davidu14 (dueño de la sesión Wayland)
+        runuser -u davidu14 -- /home/davidu14/.local/bin/ms912x-wake.sh &
+        ;;
+esac

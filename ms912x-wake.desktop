@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MS912x Wake
+Comment=Forza renegociación HDMI @50 y damage window para adaptador MacroSilicon MS912x
+Exec=/home/davidu14/.local/bin/ms912x-wake.sh
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-phase=1
