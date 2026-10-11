@@ -167,5 +167,5 @@ journalctl -t ms912x-wake -f
 
 ---
 
-**Última validación**: Octubre 2026 — Estable en login + suspend/resume múltiples ciclos.
+**Última validación**: Octubre 2026 — Versión v1.2.6. Estable en login + suspend/resume múltiples ciclos.
 **Modo actual**: 1920x1080@60Hz (preferido) + damage window → **estable**.
