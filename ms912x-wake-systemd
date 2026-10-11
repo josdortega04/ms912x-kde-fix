@@ -6,7 +6,8 @@
 case "${1:-}" in
     post)
         # post-suspend: $2 = suspend|hibernate
-        # Esperar a que la sesión Wayland esté lista antes de actuar
-        MS912X_WAIT_WAYLAND=1 runuser -u davidu14 -- /home/davidu14/.local/bin/ms912x-wake.sh &
+        # Ejecutar y esperar completado (sin background &) para asegurar que
+        # la danza completa termine antes de que KWin reaplique config
+        MS912X_WAIT_WAYLAND=1 /home/davidu14/.local/bin/ms912x-wake.sh
         ;;
 esac
