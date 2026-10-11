@@ -15,6 +15,18 @@ set -uo pipefail
 LOG_TAG="ms912x-wake"
 log() { logger -t "$LOG_TAG" "$*"; echo "[$(date '+%H:%M:%S')] $*"; }
 
+# --- Esperar a que la sesión Wayland esté lista (solo en resume) ---
+# En autostart KDE ya está lista; en systemd sleep hook puede no estarlo.
+if [ "${MS912X_WAIT_WAYLAND:-0}" = "1" ]; then
+    log "Esperando sesión Wayland (XDG_RUNTIME_DIR)..."
+    for ((i=0; i<30; i++)); do
+        [ -d "/run/user/$(id -u davidu14)" ] && break
+        sleep 1
+    done
+    # Dar tiempo extra a KWin para inicializar
+    sleep 3
+fi
+
 # --- 1. Detectar salida ms912x ---
 OUT=$(kscreen-doctor -j 2>/dev/null | jq -r '.outputs[] | select(.name == "HDMI-A-2") | .name' 2>/dev/null | head -1)
 [ -z "$OUT" ] && { log "ERROR: no se detecta HDMI-A-2"; exit 1; }
@@ -44,6 +56,21 @@ if [ -f "$SCRIPTS_DIR/position-damage.sh" ]; then
     "$SCRIPTS_DIR/position-damage.sh" --restart
 else
     log "WARN: position-damage.sh no encontrado en $SCRIPTS_DIR"
+fi
+
+# --- 5. Verificación final: que KWin no lo vuelva a poner en @60 sin damage ---
+# Esperar un poco y forzar @60+damage si KWin lo cambió (modo preferido con damage ES estable)
+sleep 3
+FINAL_MODE=$(kscreen-doctor -j 2>/dev/null | jq -r --arg out "$OUT" '.outputs[] | select(.name == $out) | .currentModeId' 2>/dev/null)
+if [ "$FINAL_MODE" = "1" ]; then
+    log "KWin reaplicó modo 1 (@60 preferred). Damage corriendo → estable. OK."
+elif [ "$FINAL_MODE" = "4" ]; then
+    log "Modo 4 (@50) mantenido. OK."
+else
+    log "WARN: modo inesperado $FINAL_MODE, forzando @60 + damage..."
+    kscreen-doctor "output.$OUT.mode.1" >/dev/null 2>&1
+    sleep 1
+    "$SCRIPTS_DIR/position-damage.sh" --restart
 fi
 
 log "Despertar completado"

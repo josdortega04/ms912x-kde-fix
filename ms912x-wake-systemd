@@ -6,7 +6,7 @@
 case "${1:-}" in
     post)
         # post-suspend: $2 = suspend|hibernate
-        # Ejecutar como usuario davidu14 (dueño de la sesión Wayland)
-        runuser -u davidu14 -- /home/davidu14/.local/bin/ms912x-wake.sh &
+        # Esperar a que la sesión Wayland esté lista antes de actuar
+        MS912X_WAIT_WAYLAND=1 runuser -u davidu14 -- /home/davidu14/.local/bin/ms912x-wake.sh &
         ;;
 esac
