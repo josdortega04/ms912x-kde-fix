@@ -10,11 +10,19 @@ Adaptador USB-HDMI basado en chip **MacroSilicon MS912x** en KDE Plasma (Wayland
 
 | Síntoma | Causa |
 |---------|-------|
-| Pantalla se apaga al cambiar modo o aplicar config | Chip inestable a @60Hz |
+| Pantalla se apaga al cambiar modo o aplicar config | Chip necesita actividad continua |
 | Solo revive moviendo ratón encima (o cambio resolución + vuelta) | Necesita "damage" continuo |
-| Funciona perfecto en SDDM, se apaga al loguear (KWin arranca) | KWin reaplica config @60 |
-| Igual tras suspend/resume | Chip queda en estado malo |
-| **Solo @50Hz es estable** — cualquier variante @60 (incluido 59.94) mata el chip | Limitación hardware/firmware |
+| Funciona perfecto en SDDM, se apaga al loguear (KWin arranca) | KWin reaplica config sin damage |
+| Igual tras suspend/resume | Chip queda en estado malo sin damage |
+
+**Hallazgo clave**: La inestabilidad **no es por el refresh rate en sí**, sino por **falta de damage (redibujado continuo)**.
+
+| Condición | @60Hz | @50Hz |
+|-----------|-------|-------|
+| **Sin damage window** | Inestable (se apaga) | Estable |
+| **Con damage window** | **Estable** | Estable |
+
+> El @50Hz era un "fallback seguro" por si el damage fallaba. **Con damage corriendo, @60Hz (preferido) funciona perfecto.**
 
 ---
 
@@ -38,21 +46,21 @@ La secuencia que **siempre** revive el chip y lo deja estable:
 kscreen-doctor output.HDMI-A-2.disable
 sleep 1
 
-# 2. Handshake @60 (fuerza renegociación HDMI)
+# 2. Handshake @60 (fuerza renegociación HDMI, modo preferido)
 kscreen-doctor output.HDMI-A-2.enable output.HDMI-A-2.mode.1
 sleep 2
 
-# 3. Modo estable @50
+# 3. Modo estable @50 (fallback por si damage falla)
 kscreen-doctor output.HDMI-A-2.mode.4
 sleep 1.5
 
-# 4. Ventana damage (16x16, 12% opacidad, redibuja cada 500ms)
+# 4. Ventana damage (16x16, 12% opacidad, redibuja cada 500ms) — CLAVE
 position-damage.sh --restart
 ```
 
 **Modos clave HDMI-A-2:**
-- **Modo 1**: `1920x1080@60.00` (preferred, **mata el chip**)
-- **Modo 4**: `1920x1080@50.00` (**estable**)
+- **Modo 1**: `1920x1080@60.00` (preferred, **estable CON damage**)
+- **Modo 4**: `1920x1080@50.00` (fallback, estable SIN damage)
 
 ---
 
@@ -107,7 +115,7 @@ ms912x-kde-fix/
 | **Login Wayland** (KWin arranca) | `ms912x-wake.sh` | `~/.config/autostart/ms912x-wake.desktop` (phase=1) |
 | **Resume suspensión/hibernación** | `ms912x-wake.sh` | `/usr/lib/systemd/system-sleep/ms912x-wake` (runuser davidu14) |
 
-> **Por qué phase=1 en autostart**: KWin aplica su config en phase=0; phase=1 corre *después*, sobreescribiendo lo que KWin puso.
+> **Por qué phase=1 en autostart**: KWin aplica su config en phase=0; phase=1 corre *después*, sobreescribiendo lo que KWin puso y arrancando damage.
 
 ---
 
@@ -118,8 +126,8 @@ ms912x-kde-fix/
 | Una sola llamada `kscreen-doctor` con 3 args | Apagón inmediato |
 | `ydotool mousemove --relative` | Sintaxis inexistente |
 | Jiggle dentro de `ms912x_apply` | Apagaba sin recuperar |
-| Confiar en `ms912x-activate.sh` sin `--mode` | Caía a preferred=@60 |
-| Cualquier solución que ignore que **KWin reaplica config al login** | Se sobrescribe |
+| Confiar en `ms912x-activate.sh` sin `--mode` | Caía a preferred=@60 **sin damage** |
+| Cualquier solución que ignore que **KWin reaplica config al login** | Se sobrescribe sin damage |
 
 ---
 
@@ -128,7 +136,7 @@ ms912x-kde-fix/
 1. **Una acción, un test, una confirmación** antes de la siguiente
 2. **Nunca tocar** `ms912x-lib.sh` ni `ms912x-activate.sh` sin datos que lo justifiquen
 3. **Nunca asumir** que KWin no reaplica config — siempre verificar `kwinoutputconfig.json`
-4. **Nunca @60Hz** — todo filtrado a `<55Hz` (preferred, best, preferredModes ignorados)
+4. **Damage window es el factor clave** — @50Hz es fallback, no requisito
 5. `kdotool` usa **coordenadas literales** — sin factor de escala
 
 ---
@@ -139,7 +147,10 @@ ms912x-kde-fix/
 # Estado actual
 kscreen-doctor -j | jq '.outputs[] | select(.name=="HDMI-A-2") | {enabled, currentModeId}'
 
-# Debe salir: "enabled": true, "currentModeId": "4"
+# Debe salir: "enabled": true, "currentModeId": "1" (o "4") + damage corriendo
+
+# Verificar damage
+pgrep -f damage-kde.py
 
 # Logs de wake
 journalctl -t ms912x-wake -f
@@ -157,3 +168,4 @@ journalctl -t ms912x-wake -f
 ---
 
 **Última validación**: Octubre 2026 — Estable en login + suspend/resume múltiples ciclos.
+**Modo actual**: 1920x1080@60Hz (preferido) + damage window → **estable**.
